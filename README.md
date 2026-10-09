@@ -1,5 +1,7 @@
 # ignis-mcp
 
+English | [简体中文](README.zh-CN.md)
+
 An [Ignis](https://github.com/Nystik-gh/ignis) server plugin that exposes an
 **MCP (Model Context Protocol) endpoint** so AI agents can operate vault
 documents: read, write, append, move, delete, list, and full-text search —
