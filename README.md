@@ -4,8 +4,9 @@ English | [简体中文](README.zh-CN.md)
 
 An [Ignis](https://github.com/Nystik-gh/ignis) server plugin that exposes an
 **MCP (Model Context Protocol) endpoint** so AI agents can operate vault
-documents: read, write, append, move, delete, list, and full-text search —
-plus hand a human a URL that opens the note in the browser.
+documents: read, write, append, upload binaries (images etc.), move, delete,
+list, and full-text search — plus hand a human a URL that opens the note in
+the browser.
 
 Zero external dependencies. File operations reuse the same server-core
 primitives as the built-in `/api/fs` routes (path traversal guard, write
@@ -68,8 +69,9 @@ bundled bridge:
 |---|---|
 | `list_vaults` | All vaults + whether ignis-mcp is enabled for each |
 | `get_file_tree` | Vault file tree with etag, optional extension filter |
-| `read_note` | Read a file (returns raw content) |
-| `write_note` | Create/overwrite a file; parent dirs auto-created |
+| `read_note` | Read a file (raw utf-8; `base64=true` returns base64 for binaries, ≤8MB) |
+| `write_note` | Create/overwrite a text file; parent dirs auto-created |
+| `upload_file` | Upload a binary file (image/PDF…) as base64 → raw bytes; ≤8MB decoded |
 | `append_note` | Append text to a file |
 | `move_path` | Move/rename a file or directory |
 | `delete_note` | Delete; **defaults to `.trash/`** (Obsidian convention), `to_trash=false` for permanent |
@@ -105,6 +107,8 @@ Optional env:
 - All paths are vault-relative and pass the same lexical + symlink traversal
   guards as the built-in API; writes go through the write coalescer.
 - `delete_note` is trash-by-default so an agent mistake is recoverable.
+- Binary channel (`upload_file`, `read_note` with `base64=true`): strict
+  base64 validation before decoding, hard cap of 8MB decoded.
 - Vault scope: tools are restricted to vaults where the plugin is enabled.
 - If a token is set, `/mcp` requires it; without a token the endpoint relies
   on whatever auth fronts the whole Ignis server.

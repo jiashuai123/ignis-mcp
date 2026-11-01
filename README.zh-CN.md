@@ -3,8 +3,8 @@
 [English](README.md) | 简体中文
 
 一个 [Ignis](https://github.com/Nystik-gh/ignis) 服务端插件，暴露 **MCP（Model Context Protocol）端点**，
-让 AI Agent 能操作 vault 文档：读取、写入、追加、移动、删除、列出文件、全文搜索——
-还能生成一个直接在浏览器中打开该笔记的 URL，方便把 AI 的改动交给人工查看。
+让 AI Agent 能操作 vault 文档：读取、写入、追加、上传二进制（图片等）、移动、删除、
+列出文件、全文搜索——还能生成一个直接在浏览器中打开该笔记的 URL，方便把 AI 的改动交给人工查看。
 
 零外部依赖。文件操作复用与 Ignis 内置 `/api/fs` 路由相同的 server-core 原语
 （路径穿越防护、写合并器、bootstrap 树缓存），因此：
@@ -64,8 +64,9 @@ GET  /api/ext/ignis-mcp/status     # 健康检查 / 鉴权状态 / vault 概览
 |---|---|
 | `list_vaults` | 列出所有 vault 及插件是否已对其启用 |
 | `get_file_tree` | vault 文件树（带 etag），可按扩展名过滤 |
-| `read_note` | 读取文件（返回原始内容） |
-| `write_note` | 创建/覆盖文件；父目录自动创建 |
+| `read_note` | 读取文件（返回原始文本；`base64=true` 时返回 base64，用于图片等二进制，≤8MB） |
+| `write_note` | 创建/覆盖文本文件；父目录自动创建 |
+| `upload_file` | 上传二进制文件（图片/PDF 等）：base64 传入，按原始字节写入；解码后 ≤8MB |
 | `append_note` | 向文件末尾追加文本 |
 | `move_path` | 移动/重命名文件或目录 |
 | `delete_note` | 删除；**默认移入 `.trash/`**（Obsidian 惯例），`to_trash=false` 时永久删除 |
@@ -100,5 +101,7 @@ curl -X POST https://host/api/ext/ignis-mcp/token \
 - 所有路径均为 vault 相对路径，通过与内置 API 相同的词法 + 符号链接穿越防护；
   写入经过写合并器。
 - `delete_note` 默认进回收站，Agent 误删可恢复。
+- 二进制通道（`upload_file`、`read_note` 的 `base64=true`）：解码前严格校验 base64，
+  硬上限 8MB（解码后）。
 - vault 范围：工具仅限插件已启用的 vault。
 - 设置 token 后 `/mcp` 必须携带；未设置 token 时，端点依赖整个 Ignis 服务前置的鉴权。

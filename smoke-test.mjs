@@ -125,7 +125,7 @@ try {
   // --- tools/list ---
   const tools = await rpc("tools/list", {});
   const toolNames = (tools.body.result?.tools || []).map((t) => t.name);
-  check("tools/list has 10 tools", toolNames.length === 10, `got: ${toolNames.join(",")}`);
+  check("tools/list has 11 tools", toolNames.length === 11 && toolNames.includes("upload_file"), `got: ${toolNames.join(",")}`);
 
   // --- list_vaults ---
   const vaultsRes = await callTool("list_vaults", {});
@@ -146,6 +146,39 @@ try {
   const append = await callTool("append_note", { vault: vaultName, path: "AI/new-note.md", content: "appended-line-xyz\n" });
   const read2 = await callTool("read_note", { vault: vaultName, path: "AI/new-note.md" });
   check("append_note", append.json?.ok && read2.text.includes("appended-line-xyz"));
+
+  // --- upload_file (binary roundtrip) ---
+  // Deterministic payload with bytes that are NOT valid utf-8 (0x80-0xff range).
+  const binPayload = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // PNG magic
+    Buffer.alloc(1024, 0).map((_, i) => i % 256),
+  ]);
+  const binB64 = binPayload.toString("base64");
+  const up = await callTool("upload_file", { vault: vaultName, path: "AI/assets/diagram.png", content_base64: binB64 });
+  check("upload_file", up.json?.ok === true && up.json.path === "AI/assets/diagram.png" && up.json.bytes === binPayload.length, up.text);
+
+  const readBinB64 = await callTool("read_note", { vault: vaultName, path: "AI/assets/diagram.png", base64: true });
+  check("read_note base64 roundtrip", readBinB64.text === binB64);
+
+  // base64 mode on a text file: decode must equal the plain-text read.
+  const readMdB64 = await callTool("read_note", { vault: vaultName, path: "AI/new-note.md", base64: true });
+  check("read_note base64 of text file", Buffer.from(readMdB64.text, "base64").toString("utf-8") === read2.text);
+
+  // whitespace in base64 is tolerated (some clients wrap lines)
+  const wrappedB64 = binB64.replace(/(.{76})/g, "$1\n");
+  const upWrapped = await callTool("upload_file", { vault: vaultName, path: "AI/assets/diagram-wrapped.png", content_base64: wrappedB64 });
+  check("upload_file tolerates wrapped base64", upWrapped.json?.ok === true, upWrapped.text);
+
+  // invalid base64 rejected
+  const badB64 = await callTool("upload_file", { vault: vaultName, path: "AI/bad.png", content_base64: "definitely!not*base64" });
+  check("upload_file rejects invalid base64", badB64.isError === true && /base64/i.test(badB64.text), badB64.text);
+
+  // oversize rejected (9MB decoded > 8MB cap) without writing the file
+  const bigB64 = Buffer.alloc(9 * 1024 * 1024, 0xab).toString("base64");
+  const tooBig = await callTool("upload_file", { vault: vaultName, path: "AI/too-big.bin", content_base64: bigB64 });
+  check("upload_file rejects oversize", tooBig.isError === true && /TOO_LARGE/.test(tooBig.text), tooBig.text.slice(0, 120));
+  const tooBigInfo = await callTool("get_note_info", { vault: vaultName, path: "AI/too-big.bin" });
+  check("oversize upload wrote nothing", tooBigInfo.isError === true);
 
   // --- get_file_tree ---
   const tree = await callTool("get_file_tree", { vault: vaultName });

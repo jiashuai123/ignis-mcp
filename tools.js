@@ -17,6 +17,7 @@ const {
   flushPendingSubtree,
   supersedePending,
   supersedePendingSubtree,
+  pendingBuffer,
 } = writeCoalescer;
 
 const TRASH_DIR = ".trash";
@@ -24,6 +25,12 @@ const DEFAULT_SEARCH_LIMIT = 50;
 const MAX_SEARCH_LIMIT = 200;
 const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024; // skip files larger than 2MB
 const SNIPPET_RADIUS = 120;
+
+// Binary channel (upload_file / read_note base64): cap on decoded bytes.
+const MAX_BINARY_BYTES = 8 * 1024 * 1024;
+// Same ceiling as a base64 length, checked before decoding the payload.
+const MAX_BASE64_CHARS = Math.ceil(MAX_BINARY_BYTES / 3) * 4;
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
 // ---------------------------------------------------------------------------
 // Vault resolution
@@ -108,6 +115,43 @@ function rel(vault, resolved) {
 }
 
 // ---------------------------------------------------------------------------
+// Binary helpers (upload_file / read_note base64)
+// ---------------------------------------------------------------------------
+
+function decodeBase64Arg(value, name) {
+  if (typeof value !== "string") {
+    throw vaultError("BAD_ARGS", `${name} must be a base64 string`);
+  }
+
+  const compact = value.replace(/\s+/g, "");
+
+  if (compact.length > MAX_BASE64_CHARS) {
+    throw vaultError(
+      "TOO_LARGE",
+      `${name} exceeds the ${MAX_BINARY_BYTES}-byte decoded limit`,
+    );
+  }
+
+  if (compact.length % 4 !== 0 || !BASE64_RE.test(compact)) {
+    throw vaultError(
+      "BAD_ARGS",
+      `${name} is not valid base64 (standard alphabet, = padded, whitespace ignored)`,
+    );
+  }
+
+  const buf = Buffer.from(compact, "base64");
+
+  if (buf.length > MAX_BINARY_BYTES) {
+    throw vaultError(
+      "TOO_LARGE",
+      `${name} exceeds the ${MAX_BINARY_BYTES}-byte decoded limit`,
+    );
+  }
+
+  return buf;
+}
+
+// ---------------------------------------------------------------------------
 // Tool handlers. Each returns { text } — text goes to the LLM as tool output.
 // ---------------------------------------------------------------------------
 
@@ -128,12 +172,52 @@ async function readNote(ctx, args) {
   // Serve buffered content if a coalesced write is still pending.
   const buffered = getPending(resolved);
 
+  if (args.base64 === true) {
+    const buf =
+      buffered !== null
+        ? pendingBuffer(buffered.data, buffered.encoding)
+        : await fs.promises.readFile(resolved);
+
+    if (buf.length > MAX_BINARY_BYTES) {
+      throw vaultError(
+        "TOO_LARGE",
+        `File exceeds the ${MAX_BINARY_BYTES}-byte base64 read limit: ${args.path}`,
+      );
+    }
+
+    return { text: buf.toString("base64") };
+  }
+
   const content =
     buffered !== null
       ? buffered.data.toString("utf-8")
       : await fs.promises.readFile(resolved, "utf-8");
 
   return { text: content };
+}
+
+async function uploadFile(ctx, args) {
+  const buf = decodeBase64Arg(args.content_base64, "content_base64");
+
+  const vault = resolveVault(ctx, args.vault);
+  const resolved = guardPath(ctx, vault, args.path);
+
+  await fs.promises.mkdir(path.dirname(resolved), { recursive: true });
+
+  // "binary" tells the coalescer this is raw bytes, not encoded text; for
+  // Buffer data fs.writeFile ignores the encoding anyway.
+  const result = await writeCoalesced(resolved, buf, "binary");
+  const r = rel(vault, resolved);
+
+  applyTree(ctx, vault.id, { type: "modified", path: r });
+
+  return {
+    text: JSON.stringify(
+      { ok: true, vault: vault.id, path: r, bytes: buf.length, size: result.size, mtime: result.mtime },
+      null,
+      2,
+    ),
+  };
 }
 
 async function writeNote(ctx, args) {
@@ -496,10 +580,17 @@ const TOOLS = [
   {
     name: "read_note",
     description:
-      "Read a text file (typically markdown) from the vault. Returns the raw file content.",
+      "Read a file from the vault. Returns raw utf-8 text; set base64=true to get base64-encoded bytes instead (images and other binary files, up to 8MB).",
     inputSchema: {
       type: "object",
-      properties: { vault: vaultParam, path: pathParam },
+      properties: {
+        vault: vaultParam,
+        path: pathParam,
+        base64: {
+          type: "boolean",
+          description: "Return the content base64-encoded (default false: raw utf-8 text).",
+        },
+      },
       required: ["path"],
     },
     handler: (ctx, args) => readNote(ctx, args),
@@ -518,6 +609,25 @@ const TOOLS = [
       required: ["path", "content"],
     },
     handler: (ctx, args) => writeNote(ctx, args),
+  },
+  {
+    name: "upload_file",
+    description:
+      "Upload a binary file (e.g. an image or PDF referenced by a note) to the vault. Content is base64 and is written as raw bytes — use write_note for text files. Up to 8MB decoded.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        vault: vaultParam,
+        path: pathParam,
+        content_base64: {
+          type: "string",
+          description:
+            "Base64-encoded file content (standard alphabet, = padded, whitespace ignored).",
+        },
+      },
+      required: ["path", "content_base64"],
+    },
+    handler: (ctx, args) => uploadFile(ctx, args),
   },
   {
     name: "append_note",
